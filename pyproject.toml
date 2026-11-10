@@ -27,3 +27,4 @@ packages = ["kite_data"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+markers = ["no_assets: tests that run without third-party hand assets"]

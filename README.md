@@ -6,6 +6,9 @@ Synthetic kinematic training data for a single morphology-conditioned decoder on
 
 ## Quickstart
 
+For open-loop metrics, baseline checks, prediction exports, and run comparisons, see
+[Evaluation and analysis](docs/EVALUATION.md). It runs on CPU without installing KITE.
+
 ```bash
 ./scripts/fetch_assets.sh            # pinned LEAP assets from GET-Zero and MuJoCo Menagerie -> third_party/
 pip install -e ".[fast,dev]"         # fast = embreex (100x faster visibility rays)
