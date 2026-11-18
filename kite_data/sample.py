@@ -35,12 +35,33 @@ class SamplerConfig:
     wide_fraction: float = 0.0  # 'wide' regime: share of examples with larger wrist noise
     wide_pos_noise: float = 0.05
     wide_rot_noise_deg: float = 30.0
+    joint_dist: str = "uniform"  # "uniform" | "kite_mixture" (KITE's released sampler, robot_model.sample_random_q)
+    unique_contacts: bool = False  # redraw repeated template points (KITE merges repeats into one contact)
 
     def to_dict(self) -> dict:
         return asdict(self)
 
 
-REGIMES = {"kite": SamplerConfig(), "wide": SamplerConfig(wide_fraction=0.2)}
+REGIMES = {
+    "kite": SamplerConfig(),
+    "wide": SamplerConfig(wide_fraction=0.2),
+    # matches KITE's released code (Nov 2026) where it differs from the paper text: contact poses from
+    # KITE's mixture distribution over the joint range, and no repeated contact points
+    "kite_code": SamplerConfig(joint_dist="kite_mixture", unique_contacts=True),
+}
+
+
+def kite_mixture_unit(n: int, d: int, rng) -> np.ndarray:
+    """KITE's joint sampler (robot_model.py sample_random_q) as fractions t in [0, 1] of each joint range.
+    Per sample: 25 % uniform; 30 % correlated 0.75 c + 0.25 u (c shared by the sample's joints);
+    25 % pushed to one end, u^2.5 or 1 - u^2.5 (end shared); 20 % centred, 0.5 + 0.5 (2u - 1)^3."""
+    u = rng.random((n, d))
+    mode = rng.random((n, 1))
+    correlated = 0.75 * rng.random((n, 1)) + 0.25 * u
+    extreme = np.where(rng.random((n, 1)) < 0.5, u ** 2.5, 1.0 - u ** 2.5)
+    center = 0.5 + 0.5 * (2.0 * u - 1.0) ** 3
+    t = np.where(mode < 0.25, u, np.where(mode < 0.55, correlated, np.where(mode < 0.80, extreme, center)))
+    return np.clip(t, 0.0, 1.0)
 
 
 def _quat_wxyz(R) -> np.ndarray:
@@ -81,12 +102,14 @@ class HandSampler:
         self.lower, self.upper = hand.lower, hand.upper
         self.accepted = self.tried = 0
 
-    def contact_joints(self, n: int, rng) -> np.ndarray:
-        """n joint configurations uniform within limits, rejecting self-collisions."""
+    def contact_joints(self, n: int, rng, joint_dist: str = "uniform") -> np.ndarray:
+        """n joint configurations within limits (uniform, or KITE's mixture), rejecting self-collisions."""
         out = []
         while len(out) < n:
             need = n - len(out)
-            batch = self.lower + rng.random((max(2 * need, 16), self.hand.n_dof)) * (self.upper - self.lower)
+            m = max(2 * need, 16)
+            t = rng.random((m, self.hand.n_dof)) if joint_dist == "uniform" else kite_mixture_unit(m, self.hand.n_dof, rng)
+            batch = self.lower + t * (self.upper - self.lower)
             for q in batch:
                 self.tried += 1
                 if not self.collider.collides(q):
@@ -95,6 +118,20 @@ class HandSampler:
                     if len(out) == n:
                         break
         return np.array(out)
+
+    def _redraw_repeats(self, tidx, rng) -> np.ndarray:
+        """Replace a template point already used earlier in the same example by a fresh draw (new region,
+        new point) until all are distinct. Regions hold hundreds of points, so this is rare and quick."""
+        tidx = tidx.copy()
+        for i in range(len(tidx)):
+            seen = set()
+            for s in range(K_SLOTS):
+                while tidx[i, s] >= 0 and int(tidx[i, s]) in seen:
+                    r = rng.integers(0, len(self.regions))
+                    tidx[i, s] = self.region_points[r, int(rng.random() * self.region_counts[r])]
+                if tidx[i, s] >= 0:
+                    seen.add(int(tidx[i, s]))
+        return tidx
 
     def contact_points(self, q, wrist_pos, wrist_R, tidx) -> tuple[np.ndarray, np.ndarray]:
         """World positions and normals of template points tidx (n, slots) at configuration (q, wrist)."""
@@ -111,7 +148,7 @@ class HandSampler:
         rng = np.random.default_rng(rng)
         nd = self.hand.n_dof
         # contact pose
-        qc = self.contact_joints(n, rng)
+        qc = self.contact_joints(n, rng, cfg.joint_dist)
         pos_c = rng.uniform(-cfg.wrist_box, cfg.wrist_box, size=(n, 3))
         quat = rng.normal(size=(n, 4))
         quat_c = _quat_wxyz(_matrix(quat / np.linalg.norm(quat, axis=1, keepdims=True)))
@@ -122,6 +159,8 @@ class HandSampler:
         within = np.floor(rng.random((n, K_SLOTS)) * self.region_counts[reg]).astype(int)
         tidx = self.region_points[reg, within]
         tidx[np.arange(K_SLOTS)[None, :] >= k[:, None]] = -1
+        if cfg.unique_contacts:
+            tidx = self._redraw_repeats(tidx, rng)
         x, nrm = self.contact_points(qc, pos_c, R_c, tidx)
         # mask: joints upstream of any selected point (wrist always 1)
         valid = tidx >= 0
