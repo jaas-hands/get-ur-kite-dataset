@@ -6,9 +6,9 @@ def test_counts_and_determinism():
     s = make_splits()
     assert s == make_splits()
     t = s["topologies"]
-    assert (len(t["train"]), len(t["val"]), len(t["test_finger_subset"]), len(t["test_joint_count"]), len(t["test_geometry"])) == (145, 8, 36, 54, 10)
+    assert (len(t["train"]), len(t["val"]), len(t["test_finger_subset"]), len(t["test_joint_count"]), len(t["test_geometry"])) == (138, 15, 36, 54, 10)
     h = s["hands"]
-    assert (len(h["train"]), len(h["val"]), len(h["test_finger_subset"]), len(h["test_combined"]), len(h["test_joint_count"]), len(h["test_geometry"])) == (1015, 56, 36, 216, 378, 40)
+    assert (len(h["train"]), len(h["val"]), len(h["test_finger_subset"]), len(h["test_combined"]), len(h["test_joint_count"]), len(h["test_geometry"])) == (966, 105, 36, 216, 378, 40)
 
 
 def test_no_leakage():
