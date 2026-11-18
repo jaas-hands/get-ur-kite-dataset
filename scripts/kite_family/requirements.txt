@@ -1,0 +1,13 @@
+# Extra packages KITE's own sampler needs (on top of torch and numpy), for gen_kite_family.py.
+# pytorch3d is NOT needed: shims/pytorch3d provides the one function used (sample_farthest_points).
+hydra-core==1.3.2
+omegaconf==2.3.0
+pytorch-kinematics==0.7.6
+trimesh==4.10.1
+rtree==1.4.1
+lxml
+networkx
+scipy
+scikit-learn==1.7.2
+python-fcl==0.7.0.11
+opencv-python-headless
