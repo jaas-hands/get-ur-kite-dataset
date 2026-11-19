@@ -2,12 +2,13 @@
 
 Synthetic kinematic training data for a single morphology-conditioned decoder on LEAP Hand variants. The project is described in [PROJECT_OVERVIEW.md](PROJECT_OVERVIEW.md) and the data plan in [DATA_GENERATION_PLAN.md](DATA_GENERATION_PLAN.md).
 
-**Status:** the hand generator, splits and example sampler are done. z = ψ(contacts) is not stored: it can be computed from the stored contacts once a ψ exists (KITE's, or our own). This repo departs from PROJECT_OVERVIEW.md in a few places, all listed under [Deviations from the project overview](#deviations-from-the-project-overview). [What's left](#whats-left) lists the remaining work.
+**Status:** the hand generator, splits, example sampler and contact evaluator are available. Contacts are stored directly; the decoder repo computes z with KITE's frozen intent encoder. This repo departs from PROJECT_OVERVIEW.md in a few places, all listed under [Deviations from the project overview](#deviations-from-the-project-overview). [What's left](#whats-left) lists the remaining work.
 
 ## Quickstart
 
 For open-loop metrics, baseline checks, prediction exports, and run comparisons, see
 [Evaluation and analysis](docs/EVALUATION.md). It runs on CPU without installing KITE.
+The first GET vs shared-slot comparison is in [Sample results](docs/SAMPLE_RESULTS.md).
 
 ```bash
 ./scripts/fetch_assets.sh            # pinned LEAP assets from GET-Zero and MuJoCo Menagerie -> third_party/
@@ -48,7 +49,7 @@ PROJECT_OVERVIEW.md is unchanged. The data here differs from it in these ways:
 | Finger attachment | "Small shifts in where fingers mount on the palm" | Index, middle and ring mounts shift by up to ±4 mm along the palm, and their motor housings move with them. The thumb mount does not move. | The thumb's motor housing is fused into the palm mesh with no clear boundary to move. This was decided during the build. |
 | Wrist poses in training | "w* ∈ arm workspace" | The wrist floats: uniform in [−0.4, 0.4]³ m with a uniformly random orientation (KITE's recipe). No arm is involved in training. | It matches what KITE's ψ and policy were trained on, keeps the data arm-agnostic, and needs no arm choice yet. Switching later only means regenerating. |
 | Joint sampling | "θ* ∼ U(joint limits)" | Uniform within limits, but contact poses where the hand collides with itself are rejected, as KITE does. | A label pose that self-collides can't be realized. |
-| What an example contains | (z, q_init, ρ_e, 𝒢_e) → q_goal, with z = ψ(c) | The raw contacts c (world-frame positions and normals) are stored instead of z. ρ_e and 𝒢_e come from each hand's `hand.json` and `Hand.graph()`. | KITE's ψ isn't released yet. z can be computed from c at load time once it is. |
+| What an example contains | (z, q_init, ρ_e, 𝒢_e) → q_goal, with z = ψ(c) | The raw contacts c (world-frame positions and normals) are stored instead of z. ρ_e and 𝒢_e come from each hand's `hand.json` and `Hand.graph()`. | The decoder computes z from c using KITE's released frozen encoder. |
 | Finger-subset test | "Fingers never seen together, e.g. thumb + ring" | Hands whose fingers are exactly {thumb, ring} or {thumb, index, ring} are held out. Thumb and ring still appear together inside larger training hands. | Read literally, it would remove 144 of the 243 layouts, including every 4-finger hand. |
 
 These are additions the overview leaves open; none changes anything it states:
@@ -156,8 +157,8 @@ Before writing, every file is checked by re-deriving the contacts from the store
 
 **In this repo:**
 1. **Import GET-Zero's own hands** as the extra test set. The files are already fetched; the converter isn't written.
-2. **Add z** once a ψ exists: KITE's when its code arrives, or our own. Computing it at load time may be enough, with no stored cache.
-3. **Re-check against KITE's code** when it arrives, then regenerate if anything differs (about 8 minutes). Things to compare:
+2. **Keep intent encoding in the decoder loader:** KITE's frozen ψ is available in the model repo; the dataset stores raw contacts.
+3. **Finish checking KITE conventions.** The `kite_code` regime already matches its joint distribution and avoids repeated contacts. Remaining details to compare:
    - how the 4,096 template points and finger/palm regions are chosen;
    - which collision pairs are checked;
    - the rotation-noise convention;
@@ -174,14 +175,11 @@ Before writing, every file is checked by re-deriving the contacts from the store
 - **Wide-noise ablation:** whether to run it.
 - **Evaluation details:** the success tolerance and the IK solver.
 
-**Waiting on KITE's code and data:**
-- ψ's weights, for z.
-- The task policy π and its demonstrations, for the oracle-intent and closed-loop evaluation modes.
-- Their scenes and world-frame convention.
+**Task evaluation:** KITE's decoder weights, recorded intents and supported task scenes are available in the model repo. A trained task policy is not included in KITE's release; oracle-intent runs can be evaluated separately.
 
 **Outside this repo:**
-- The GET decoder and its training.
-- The evaluation pipeline: open-loop metrics, oracle intent, and closed-loop MuJoCo with an arm, IK and a position controller.
+- Decoder training and MuJoCo rollouts live in [get-ur-kite](https://github.com/jaas-hands/get-ur-kite).
+- Contact evaluation is available here; connecting the selected decoder to task rollouts is the next step.
 
 ## Third-party assets
 
@@ -190,3 +188,11 @@ These are not committed. `scripts/fetch_assets.sh` fetches them at pinned commit
 - **MuJoCo Menagerie** (`google-deepmind/mujoco_menagerie` @ `b065505`, `leap_hand/`, MIT): collision boxes and fingertip pad meshes.
 
 The papers are listed in [reference/](reference/README.md).
+
+## Next steps
+
+- Agree on the full evaluation splits and main model comparison with the team.
+- Run the contact evaluator on the full predictions, with matching settings and
+  additional training seeds if available.
+- Get the actual checkpoints for task rollouts in the model repo, and agree on
+  fixed episodes and the success definition with Simon.

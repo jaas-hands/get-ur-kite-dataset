@@ -22,13 +22,25 @@ from .eval_report import (diagnostic_plot, distribution_plot, grouped_summary,
 DEFAULT_DATA = config.DATA_DIR / "examples" / "eval_smoke"
 
 
-def load_sampler(hand_dir):
+def load_sampler(hand_dir, contact_only=False):
     from .collision import Collider
     from .qa import load_hand
     from .sample import HandSampler
 
-    hand, template = load_hand(hand_dir)
     desc = json.loads((hand_dir / "hand.json").read_text())
+    if contact_only:
+        from .eval_geometry import DescriptorHand
+        from .eval_io import read_npz
+
+        hand = DescriptorHand(desc)
+        template = read_npz(hand_dir / "template.npz")
+        if (not np.issubdtype(template["link"].dtype, np.integer)
+                or np.any(template["link"] < 0) or np.any(template["link"] >= len(hand.links))):
+            raise ValueError("template link indices do not match descriptor")
+        if "link_names" in template and list(template["link_names"]) != hand.links:
+            raise ValueError("template link order differs from descriptor")
+        return HandSampler(hand, template, check_collisions=False), template, desc["dof_names"]
+    hand, template = load_hand(hand_dir)
     if desc["dof_names"] != [j.name for j in hand.dof_joints]:
         raise ValueError(f"{hand_dir}: joint order differs from this generator")
     collider = Collider(hand, (hand_dir / "hand.xml").read_text())
@@ -64,7 +76,7 @@ def export(args):
     out = new_directory(args.out)
     records = []
     for path in discover(args.data, args.splits):
-        ex, record = source_record(path, args.data, args.hands)
+        ex, record = source_record(path, args.data, args.hands, args.contact_only)
         names = json.loads((args.hands / record["hand_id"] / "hand.json").read_text())["dof_names"]
         export_predictions(out / record["path"], baseline(ex, args.baseline), record, names)
         records.append(record)
@@ -91,12 +103,12 @@ def run(args):
     with (out / "examples.csv").open("w", newline="") as stream:
         writer = None
         for path in paths:
-            ex, record = source_record(path, args.data, args.hands)
-            sampler, template, names = load_sampler(args.hands / record["hand_id"])
+            ex, record = source_record(path, args.data, args.hands, args.contact_only)
+            sampler, template, names = load_sampler(args.hands / record["hand_id"], args.contact_only)
             pred_path = args.predictions / record["path"] if args.predictions else None
             pred = load_predictions(pred_path, record, names) if pred_path else baseline(ex, args.baseline)
-            rows = evaluate_hand(sampler, ex, pred, thresholds, args.batch_size)
-            initial = rows if args.baseline == "init" else evaluate_hand(sampler, ex, baseline(ex, "init"), thresholds, args.batch_size)
+            rows = evaluate_hand(sampler, ex, pred, thresholds, args.batch_size, args.joint_policy)
+            initial = rows if args.baseline == "init" else evaluate_hand(sampler, ex, baseline(ex, "init"), thresholds, args.batch_size, args.joint_policy)
             if any(r["invalid_prediction"] for r in initial):
                 raise ValueError(f"{path}: dataset contains an invalid starting pose")
             for row, before in zip(rows, initial):
@@ -119,7 +131,8 @@ def run(args):
             ids = select_examples(rows, args.plot_count)
             if ids:
                 image = Path("poses") / record["split"] / f"{record['hand_id']}.png"
-                pose_plot(out / image, sampler, template, ex, pred, rows, ids)
+                plotted_pred = {**pred, "joints": np.clip(pred["joints"][:, :sampler.hand.n_dof], sampler.lower, sampler.upper)} if args.joint_policy == "clamp" else pred
+                pose_plot(out / image, sampler, template, ex, plotted_pred, rows, ids)
                 selections.extend({"split": record["split"], "hand_id": record["hand_id"],
                                    "example_id": i, "selection": "first" if j == 0 else "worst_remaining",
                                    "image": str(image)} for j, i in enumerate(ids))
@@ -133,7 +146,9 @@ def run(args):
                 "model": metadata, "protocol": {"thresholds": asdict(thresholds),
                     "threshold_status": "proposed; confirm with team", "conventions": CONVENTIONS,
                     "matching": "labelled_surface_points", "aggregation": "contacts -> examples -> equal-weight hands",
-                    "collision": "stored hand.xml: boxes and fingertip pads; hand only",
+                    "collision": "not evaluated" if args.contact_only else "stored hand.xml: boxes and fingertip pads; hand only",
+                    "kinematics": "stored descriptor" if args.contact_only else "generator reconstruction",
+                    "joint_policy": args.joint_policy, "joint_limits": "raw predictions before any clamp",
                     "penetration_tolerance_m": config.PENETRATION_TOL, "quaternion_norm_tolerance": 1e-3,
                     "invalid_predictions": "fail success; errors/physical checks undefined",
                     "error_denominator": "valid predictions; undefined split mean if any hand has none"},
@@ -179,7 +194,7 @@ def compare(args):
         for method in methods:
             group = [r for r in rows if r["split"] == split and r["method"] == method]
             result = {"method": method, "split": split, "runs": len(group)}
-            for key in ("mean_position_mm", "mean_normal_deg", "valid_contact_success_pct", "invalid_prediction_pct"):
+            for key in ("mean_position_mm", "mean_normal_deg", "contact_success_pct", "valid_contact_success_pct", "invalid_prediction_pct"):
                 values = [r[key] for r in group]
                 known = all(v is not None for v in values)
                 result[key] = float(np.mean(values)) if known else None
@@ -188,8 +203,9 @@ def compare(args):
     write_csv(out / "methods.csv", combined)
     plt = pyplot()
     fig, axes = plt.subplots(1, 3, figsize=(12, 4), layout="constrained")
-    for ax, key, title in zip(axes, ("mean_position_mm", "mean_normal_deg", "valid_contact_success_pct"),
-                             ("Position error (mm)", "Normal error (deg)", "Valid contact success (%)")):
+    success_key = "contact_success_pct" if reference["protocol"]["collision"] == "not evaluated" else "valid_contact_success_pct"
+    for ax, key, title in zip(axes, ("mean_position_mm", "mean_normal_deg", success_key),
+                             ("Position error (mm)", "Normal error (deg)", "Contact success (%)" if success_key == "contact_success_pct" else "Valid contact success (%)")):
         for i, method in enumerate(methods):
             group = [r for r in combined if r["method"] == method]
             x = np.arange(len(splits)) + (i - (len(methods) - 1) / 2) * .15
@@ -203,12 +219,11 @@ def compare(args):
     fig.suptitle("Run means ± sample SD where multiple runs are supplied")
     fig.savefig(out / "comparison.png", dpi=140)
     plt.close(fig)
-    lines = ["# Run comparison", "", "Data, hand assets, and metric settings match across these runs.",
-             "Training budgets, encoder choices, and seed independence still need review in each run's metadata.",
-             "Repeated labels group runs; they do not establish independent training seeds. One run has no estimated seed variation.", ""]
+    lines = ["# Run comparison", "", "These runs use the same data, hand assets, and scoring rules.",
+             "For model comparisons, also check training budgets, encoder versions, and independent seeds.", ""]
     for label, path, manifest, summaries in entries:
         lines += [f"## {label}: {manifest['run_id']}", "", result_table(summaries), "", f"Source: {path}", ""]
-    lines += ["`methods.csv` reports means and sample SD across supplied runs. These are descriptive comparisons, not significance tests.",
+    lines += ["`methods.csv` gives means and sample SD for repeated labels. One run has no seed-variation estimate; these are not significance tests.",
               "Goal is a sanity reference; init is no motion. Neither is a trained decoder."]
     (out / "report.md").write_text("\n".join(lines) + "\n")
     write_json(out / "comparison.json", {"runs": [{"label": label, "path": str(path),
@@ -233,6 +248,7 @@ def parser():
         p.add_argument("--data", type=Path, default=DEFAULT_DATA, help="directory containing split subdirectories")
         p.add_argument("--hands", type=Path, default=config.DATA_DIR / "hands")
         p.add_argument("--splits", nargs="+", default=["val"])
+        p.add_argument("--contact-only", action="store_true", help="use stored hand.json kinematics; collision and valid-success metrics are unavailable")
         p.add_argument("--out", type=Path, required=True)
         p.set_defaults(func=function)
         if name == "export":
@@ -247,6 +263,7 @@ def parser():
             p.add_argument("--normal-deg", type=float, default=15)
             p.add_argument("--joint-tolerance-rad", type=float, default=1e-6)
             p.add_argument("--batch-size", type=int, default=512)
+            p.add_argument("--joint-policy", choices=["raw", "clamp"], default="raw", help="pose used for contacts/collisions; limit violations always use raw predictions")
             p.add_argument("--plot-count", type=int, default=2, help="0–4 pose panels per hand; use 0 for large evaluations")
     c = sub.add_parser("compare", help="compare runs on identical data and metric settings")
     c.add_argument("--runs", nargs="+", required=True, help="LABEL=DIRECTORY; repeat a label to group runs")

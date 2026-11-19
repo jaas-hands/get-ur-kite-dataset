@@ -27,21 +27,22 @@ def sha256(path):
     return digest.hexdigest()
 
 
-def hand_files(hand_dir):
-    return {name: sha256(hand_dir / name) for name in ("hand.json", "template.npz", "hand.xml")}
+def hand_files(hand_dir, contact_only=False):
+    names = ("hand.json", "template.npz") if contact_only else ("hand.json", "template.npz", "hand.xml")
+    return {name: sha256(hand_dir / name) for name in names}
 
 
 def hand_digest(hashes):
     return hashlib.sha256(json.dumps(hashes, sort_keys=True).encode()).hexdigest()
 
 
-def source_record(path, root, hands_dir):
+def source_record(path, root, hands_dir, contact_only=False):
     data = read_npz(path)
     hand_id, split = str(data["hand_id"]), str(data["split"])
     relative = path.relative_to(root)
     if relative.as_posix() != f"{split}/{hand_id}.npz":
         raise ValueError(f"{path}: file path must match its split and hand_id")
-    hashes = hand_files(hands_dir / hand_id)
+    hashes = hand_files(hands_dir / hand_id, contact_only)
     return data, {"path": relative.as_posix(), "sha256": sha256(path),
                   "hand_id": hand_id, "split": split, "examples": len(data["k"]),
                   "hand_files": hashes, "hand_sha256": hand_digest(hashes)}

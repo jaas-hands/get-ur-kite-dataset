@@ -82,9 +82,9 @@ def _wrist_transforms(pos, R) -> np.ndarray:
 
 
 class HandSampler:
-    def __init__(self, hand: Hand, template: dict, collider: Collider | None = None):
+    def __init__(self, hand: Hand, template: dict, collider: Collider | None = None, *, check_collisions=True):
         self.hand = hand
-        self.collider = collider or Collider(hand)
+        self.collider = (collider or Collider(hand)) if check_collisions else None
         self.tpl_link = np.asarray(template["link"], dtype=int)
         self.tpl_pos = np.asarray(template["pos"], dtype=float)
         self.tpl_normal = np.asarray(template["normal"], dtype=float)
@@ -104,6 +104,8 @@ class HandSampler:
 
     def contact_joints(self, n: int, rng, joint_dist: str = "uniform") -> np.ndarray:
         """n joint configurations within limits (uniform, or KITE's mixture), rejecting self-collisions."""
+        if self.collider is None:
+            raise ValueError("contact-only geometry cannot generate collision-checked samples")
         out = []
         while len(out) < n:
             need = n - len(out)

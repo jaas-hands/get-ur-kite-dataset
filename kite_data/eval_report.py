@@ -54,28 +54,38 @@ def result_table(rows, label="Split"):
 
 
 def write_report(out, manifest, summaries, plot_count):
-    t = manifest["protocol"]["thresholds"]
-    lines = [f"# {manifest['run_id']}", "", result_table(summaries), "",
-             "Each split weights its hands equally. Errors average contacts within an example, then examples within a hand.",
-             "Errors describe valid predictions only; success rates include every example. Invalid predictions count as failures.",
-             "If any hand has no valid predictions, its split error is n/a. Collision/limit rates use only evaluated predictions; see counts in the CSVs.", "",
-             f"Contact success: every selected point within {t['position_mm']:g} mm and {t['normal_deg']:g} degrees.",
-             "Valid success also requires no joint-limit violation or hand self-collision. These thresholds are proposed defaults, not an approved protocol.",
-             "Matching uses the labelled surface points. It does not credit a different finger reaching the same target.",
-             "Collision checks use the dataset's approximate boxes/pads, without an arm or objects.", "",
-             "## Files", "", "- `examples.csv`: all examples, including invalid predictions.",
-             "- `hands.csv` / `splits.csv`: per-hand results and equal-hand split averages.",
-             "- `diagnostics.csv`: per-hand groups by DoF, contact count, and initial-error bin.",
-             "- `manifest.json`: input hashes, conventions, settings, software versions, and supplied model metadata.",
-             "- `distribution.png`: per-hand contact errors and valid success.",
-             "- `diagnostics.png`: error versus initial error and contact count."]
+    """Write the result table, scoring rules, and links to the full output."""
+    protocol = manifest["protocol"]
+    thresholds = protocol["thresholds"]
+    contact_only = protocol["collision"] == "not evaluated"
+    purpose = {
+        "goal": "Goal check: score the recorded answer. Errors should be near zero.",
+        "init": "No-motion baseline: score the starting pose. This is what a decoder should improve on.",
+    }.get(manifest["baseline"], "Score the supplied predictions against the requested contacts.")
+    lines = [
+        f"# {manifest['run_id']}", "", purpose, "", result_table(summaries), "",
+        f"Success requires every contact within {thresholds['position_mm']:g} mm and "
+        f"every normal within {thresholds['normal_deg']:g} degrees.",
+        f"Joint scoring: {protocol.get('joint_policy', 'raw')}. Limit violations use the raw prediction.",
+        "Collisions: NOT performed; self-collision and valid success are n/a, not zero."
+        if contact_only else "Valid success also requires no limit violation or hand self-collision (approximate boxes/pads).",
+        "", "Errors average contacts, then examples, then hands equally within each split. "
+        "Invalid predictions fail success; their errors and physical checks are unavailable. "
+        "A hand with no valid predictions makes its split error n/a.",
+        "", "Matching uses the labelled surface points. Another finger reaching the target gets no credit. "
+        "Contact success does not establish task success. Confirm the protocol before final comparisons.",
+        "", "## Files", "",
+        "- [examples.csv](examples.csv): every row.",
+        "- [hands.csv](hands.csv) / [splits.csv](splits.csv): grouped results.",
+        "- [distribution.png](distribution.png) / [diagnostics.png](diagnostics.png): errors and success plots.",
+        "- [diagnostics.csv](diagnostics.csv): results by joint count, contact count, and starting error.",
+        "- [manifest.json](manifest.json): inputs, settings, software versions, and code hashes.",
+    ]
     if plot_count:
-        lines += [f"- `poses/`: {plot_count} examples selected per hand (first row and worst remaining position errors).",
-                  "  Selection is recorded in `plot_selection.csv`. Invalid rows rank first and are labelled instead of drawn."]
+        lines += ["- [plot_selection.csv](plot_selection.csv): pose plot paths and selected rows "
+                  "(first row, then invalid/worst errors)."]
     if manifest["baseline"] == "goal":
-        lines += ["", "Goal poses are a reconstruction check, not a trained-model result. Mixed goal poses can still self-collide."]
-    elif manifest["baseline"] == "init":
-        lines += ["", "This is the no-motion baseline. A learned decoder should improve on it."]
+        lines += ["", "This checks reconstruction, not model quality. Goal poses can still self-collide."]
     (out / "report.md").write_text("\n".join(lines) + "\n")
 
 
@@ -83,8 +93,9 @@ def distribution_plot(out, hands):
     plt = pyplot()
     splits = sorted({r["split"] for r in hands})
     fig, axes = plt.subplots(1, 3, figsize=(max(10, len(splits) * 2), 4), layout="constrained")
-    for ax, key, title in zip(axes, ("mean_position_mm", "mean_normal_deg", "valid_contact_success_pct"),
-                              ("Position error (mm)", "Normal error (deg)", "Valid contact success (%)")):
+    success_key = "contact_success_pct" if all(r["valid_contact_success_pct"] is None for r in hands) else "valid_contact_success_pct"
+    for ax, key, title in zip(axes, ("mean_position_mm", "mean_normal_deg", success_key),
+                              ("Position error (mm)", "Normal error (deg)", "Contact success (%)" if success_key == "contact_success_pct" else "Valid contact success (%)")):
         for x, split in enumerate(splits):
             vals = [r[key] for r in hands if r["split"] == split and r[key] is not None]
             ax.scatter(np.full(len(vals), x) + np.linspace(-.12, .12, len(vals)), vals, alpha=.65, s=20)

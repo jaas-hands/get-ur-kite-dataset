@@ -59,7 +59,7 @@ def validate_examples(sampler, ex):
     return valid
 
 
-def evaluate_hand(sampler, ex, prediction, thresholds=Thresholds(), batch_size=512):
+def evaluate_hand(sampler, ex, prediction, thresholds=Thresholds(), batch_size=512, joint_policy="raw"):
     """Return one row per example, in dataset order; padded joint columns are ignored.
 
     Invalid predictions fail both success tests. Their errors and physical checks are
@@ -69,6 +69,8 @@ def evaluate_hand(sampler, ex, prediction, thresholds=Thresholds(), batch_size=5
 
     if batch_size < 1:
         raise ValueError("batch_size must be positive")
+    if joint_policy not in ("raw", "clamp"):
+        raise ValueError("joint_policy must be raw or clamp")
     valid = validate_examples(sampler, ex)
     n, nd = len(valid), sampler.hand.n_dof
     q = np.asarray(prediction["joints"], float)
@@ -77,6 +79,7 @@ def evaluate_hand(sampler, ex, prediction, thresholds=Thresholds(), batch_size=5
     if q.shape not in ((n, nd), (n, 16)) or pos.shape != (n, 3) or quat.shape != (n, 4):
         raise ValueError(f"predictions need joints (n, {nd}) or (n, 16), wrist_pos (n, 3), wrist_quat (n, 4)")
     q = q[:, :nd]
+    scored_q = np.clip(q, sampler.lower, sampler.upper) if joint_policy == "clamp" else q
     with np.errstate(over="ignore", invalid="ignore"):
         norms = np.linalg.norm(quat, axis=1)
     good = (np.isfinite(q).all(1) & np.isfinite(pos).all(1) & np.isfinite(quat).all(1)
@@ -86,12 +89,12 @@ def evaluate_hand(sampler, ex, prediction, thresholds=Thresholds(), batch_size=5
              "mean_normal_deg": None, "max_normal_deg": None,
              "contact_success": False, "joint_limit_violation": None,
              "self_collision": None, "invalid_prediction": True,
-             "valid_contact_success": False} for i in range(n)]
+             "valid_contact_success": False if sampler.collider is not None else None} for i in range(n)]
     indices = np.flatnonzero(good)
     for start in range(0, len(indices), batch_size):
         ids = indices[start:start + batch_size]
         with np.errstate(over="ignore", invalid="ignore"):
-            x, normals = sampler.contact_points(q[ids], pos[ids], _matrix(quat[ids]), ex["template_idx"][ids])
+            x, normals = sampler.contact_points(scored_q[ids], pos[ids], _matrix(quat[ids]), ex["template_idx"][ids])
             errors = np.linalg.norm(x - ex["contact_pos"][ids], axis=-1) * 1000
         for j, i in enumerate(ids):
             mask = valid[i]
@@ -101,13 +104,13 @@ def evaluate_hand(sampler, ex, prediction, thresholds=Thresholds(), batch_size=5
                 continue
             limit = bool(np.any((q[i] < sampler.lower - thresholds.joint_tolerance_rad)
                                 | (q[i] > sampler.upper + thresholds.joint_tolerance_rad)))
-            collision = bool(sampler.collider.collides(q[i]))
+            collision = bool(sampler.collider.collides(scored_q[i])) if sampler.collider is not None else None
             success = bool(np.all(pe <= thresholds.position_mm) and np.all(ne <= thresholds.normal_deg))
             rows[i].update(mean_position_mm=float(pe.mean()), max_position_mm=float(pe.max()),
                            mean_normal_deg=float(ne.mean()), max_normal_deg=float(ne.max()),
                            contact_success=success, joint_limit_violation=limit,
                            self_collision=collision, invalid_prediction=False,
-                           valid_contact_success=success and not limit and not collision)
+                           valid_contact_success=(success and not limit and not collision) if collision is not None else None)
     return rows
 
 
@@ -124,7 +127,8 @@ def summarize(rows):
         out[key] = float(np.mean([r[key] for r in finite])) if finite else None
     for key in RATES:
         denominator = finite if key in ("joint_limit_violation", "self_collision") else rows
-        out[f"{key}_pct"] = float(np.mean([r[key] for r in denominator]) * 100) if denominator else None
+        values = [r[key] for r in denominator]
+        out[f"{key}_pct"] = float(np.mean(values) * 100) if values and all(v is not None for v in values) else None
     return out
 
 
