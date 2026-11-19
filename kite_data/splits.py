@@ -21,7 +21,7 @@ from .topology import Topology, enumerate_topologies
 SUBSET_HOLDOUT = (frozenset({"thumb", "ring"}), frozenset({"thumb", "index", "ring"}))
 # Joint-count test: every remaining hand with a 3-joint index finger.
 JOINT_COUNT_HOLDOUT = ("index", 3)
-N_VALIDATION = 8
+N_VALIDATION = 15
 N_GEOMETRY_TOPOLOGIES = 10
 TRAIN_DRAWS = tuple(range(0, 7))  # nominal + 6 random geometries
 GEOMETRY_TEST_DRAWS = tuple(range(7, 11))  # geometries never used in training

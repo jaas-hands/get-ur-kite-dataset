@@ -20,6 +20,23 @@ python -m kite_data.qa hands I4-M4-R4-T4_g0 I3-M0-R2-T2_g1 --pose random   # dat
 python -m kite_data.qa examples data/examples/kite/val/I2-M4-R3-T3_g1.npz  # data/qa/examples.png
 ```
 
+## KITE's own embodiments (Allegro, Barrett)
+
+`scripts/kite_family/gen_kite_family.py` makes records for robots KITE was trained on, with KITE's own
+sampler (`ContactPolicyProbeDataset` under KITE's released config), in the same record format the decoder
+reads for LEAP. It needs a KITE checkout with its runtime assets (`KITE_ROOT`, or the
+`get-ur-kite/third_party/KITE` submodule next to this repo) and the packages in
+`scripts/kite_family/requirements.txt`; pytorch3d is replaced by a small pure-torch shim. CPU only.
+
+```bash
+python scripts/kite_family/gen_kite_family.py --robot allegro_right --n 2000 --seed 101 --out ../getkite_data/multifamily_pilot/allegro_right_train.npz
+sbatch scripts/kite_family/gen_kite.sbatch       # Allegro + Barrett, train (seed 101, 2,000) and val (seed 202, 500)
+```
+
+Output goes outside the repo (default `../getkite_data/multifamily_pilot`, or `$GETKITE_DATA`), like `data/`.
+`slurm/generate.sbatch` runs `kite_data.generate` on a CPU node (the commands used for the current
+`kite_code` data are in its header).
+
 ## Deviations from the project overview
 
 PROJECT_OVERVIEW.md is unchanged. The data here differs from it in these ways:

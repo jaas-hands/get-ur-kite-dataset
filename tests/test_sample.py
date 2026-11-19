@@ -77,3 +77,26 @@ def test_mask_means_what_it_says():
         moved_masked += int(np.sum(delta[m] > 1e-4))
         total_masked += int(m.sum())
     assert moved_masked / total_masked > 0.95
+
+
+def test_kite_mixture_matches_kite_sampler_moments():
+    from kite_data.sample import kite_mixture_unit
+    t = kite_mixture_unit(200_000, 4, np.random.default_rng(0))
+    assert t.min() >= 0 and t.max() <= 1
+    # mixture moments (computed analytically from KITE's sample_random_q): mean 0.5, more mass at the ends than uniform
+    assert abs(t.mean() - 0.5) < 0.005
+    ends = np.mean((t < 0.05) | (t > 0.95))
+    assert 0.110 < ends < 0.124  # analytic 0.117 (uniform: 0.100), mostly from the pushed-to-one-end mode
+    # the correlated mode makes joints of one sample move together
+    assert 0.25 < np.corrcoef(t[:, 0], t[:, 1])[0, 1] < 0.40
+
+
+def test_kite_code_regime(sampler):
+    s = sampler
+    ex = s.sample(500, 1, REGIMES["kite_code"])
+    t = ex["template_idx"]
+    for row in t:
+        v = row[row >= 0]
+        assert len(np.unique(v)) == len(v)
+    out = verify(s, ex)
+    assert all(v for k, v in out.items() if k.endswith("_ok")), out

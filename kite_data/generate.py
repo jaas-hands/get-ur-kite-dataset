@@ -80,13 +80,18 @@ def main(argv=None):
     ap.add_argument("--hands", default=str(config.DATA_DIR / "hands"))
     ap.add_argument("--out", default=None, help="default: data/examples/<regime>")
     ap.add_argument("--workers", type=int, default=os.cpu_count())
+    ap.add_argument("--hands-list", default=None, help="file with one hand id per line; only these hands are generated")
     args = ap.parse_args(argv)
 
     splits = load_splits()
     names = args.splits or list(splits["hands"])
     counts = _parse_counts(args.per_hand)
     out = Path(args.out or EXAMPLES_DIR / args.regime)
-    jobs = [(h, s, counts[split_kind(s)], args.seed, args.regime, args.hands, str(out)) for s in names for h in splits["hands"][s]]
+    keep = set(Path(args.hands_list).read_text().split()) if args.hands_list else None
+    jobs = [(h, s, counts[split_kind(s)], args.seed, args.regime, args.hands, str(out))
+            for s in names for h in splits["hands"][s] if keep is None or h in keep]
+    if not jobs:
+        raise SystemExit("no hands selected")
     total = sum(j[2] for j in jobs)
     print(f"generating {total:,} examples for {len(jobs)} hands ({', '.join(names)}) with {args.workers} workers")
     t0, rows = time.time(), []
