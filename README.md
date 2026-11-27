@@ -2,7 +2,7 @@
 
 Synthetic kinematic training data for a single morphology-conditioned decoder on LEAP Hand variants. The project is described in [PROJECT_OVERVIEW.md](PROJECT_OVERVIEW.md) and the data plan in [DATA_GENERATION_PLAN.md](DATA_GENERATION_PLAN.md).
 
-**Status:** the hand generator, splits and example sampler are done. z = ψ(contacts) is not stored: it can be computed from the stored contacts once a ψ exists (KITE's, or our own). This repo departs from PROJECT_OVERVIEW.md in a few places, all listed under [Deviations from the project overview](#deviations-from-the-project-overview). [What's left](#whats-left) lists the remaining work.
+**Status (2026-11-27):** the LEAP hand generator, splits, example sampler (including the `kite_code` regime that matches KITE's released code), the generated-body generator and the KITE-family record generator are done; they produce all the training and evaluation data behind the delivered decoder, CF-3e (see [Data behind the decoder](#data-behind-the-decoder-cf-3e)). z = ψ(contacts) is not stored: the decoder computes it from the stored contacts with KITE's released ψ. This repo departs from PROJECT_OVERVIEW.md in a few places, all listed under [Deviations from the project overview](#deviations-from-the-project-overview). [What's left](#whats-left) lists the remaining work.
 
 ## Quickstart
 
@@ -13,11 +13,12 @@ pytest                               # ~30 s
 python -m kite_data.build_hands      # all 243 topologies x 7 geometries -> data/hands/ (~4 min on 4 cores)
 python -m kite_data.splits           # hand-level splits -> data/splits.json
 python -m kite_data.generate         # 2.4M examples for every split -> data/examples/kite/ (~4 min, 850 MB)
+python -m kite_data.generate --regime kite_code   # the regime the decoder uses -> data/examples/kite_code/
 python -m kite_data.qa hands I4-M4-R4-T4_g0 I3-M0-R2-T2_g1 --pose random   # data/qa/hands.png
 python -m kite_data.qa examples data/examples/kite/val/I2-M4-R3-T3_g1.npz  # data/qa/examples.png
 ```
 
-## KITE's own embodiments (Allegro, Barrett)
+## KITE's own embodiments (Allegro, Barrett, Wuji)
 
 `scripts/kite_family/gen_kite_family.py` makes records for robots KITE was trained on, with KITE's own
 sampler (`ContactPolicyProbeDataset` under KITE's released config), in the same record format the decoder
@@ -28,11 +29,43 @@ reads for LEAP. It needs a KITE checkout with its runtime assets (`KITE_ROOT`, o
 ```bash
 python scripts/kite_family/gen_kite_family.py --robot allegro_right --n 2000 --seed 101 --out ../getkite_data/multifamily_pilot/allegro_right_train.npz
 sbatch scripts/kite_family/gen_kite.sbatch       # Allegro + Barrett, train (seed 101, 2,000) and val (seed 202, 500)
+OUT=$GETKITE_DATA/multifamily_10x HANDS_LIST=scripts/kite_family/leap_train_hands_10x.txt \
+  sbatch scripts/kite_family/gen_10x.sbatch      # extra pool: 18,000 more per robot (seed 303) + LEAP seed-1 records
+python scripts/kite_family/gen_kite_family.py --robot wujihand_right --n 500 --seed 202 \
+  --out $GETKITE_DATA/multifamily_heldout/wujihand_right_eval.npz   # Wuji, evaluation only
 ```
 
 Output goes outside the repo (default `../getkite_data/multifamily_pilot`, or `$GETKITE_DATA`), like `data/`.
-`slurm/generate.sbatch` runs `kite_data.generate` on a CPU node (the commands used for the current
-`kite_code` data are in its header).
+`scripts/slurm/gen_kite_code.sbatch` (and the older `slurm/generate.sbatch`) run `kite_data.generate` on a CPU node; the
+commands that produced the current `kite_code` data are in their headers.
+
+## Generated bodies (primitive hands)
+
+`kite_data.build_prim` makes procedurally generated hands (box palm, capsule phalanges, 2–5 fingers, 2–4 joints per
+finger) and their `kite_code` records. Each body is deterministic in (seed, index, attempt). Bodies with Wuji's 5 × 4
+layout (the nearest layout to Shadow this generator can produce) are excluded.
+
+```bash
+python -m kite_data.build_prim hands --n 900 --seed 20261119 --out data/prim/hands   # P0000-P0899, regenerates byte-identical
+python -m kite_data.build_prim records --hands data/prim/hands --out data/prim/examples/kite_code --plan plan.json
+python -m kite_data.build_prim couple --src data/prim/hands --out data/prim_c/hands --seed 20261119   # optional coupled joints
+```
+
+The record plan for the decoder is `configs/decoder/dlevels/record_plan.json` in `get-ur-kite`. That repo also holds
+the template repair and validation steps run after the build.
+
+## Data behind the decoder (CF-3e)
+
+The exact commands, seeds and order are in `get-ur-kite`'s
+[`docs/cf3e_delivery.md`](https://github.com/jaas-hands/get-ur-kite/blob/main/docs/cf3e_delivery.md) ("Reproducing it
+from scratch"). Use this repo's `main` at commit `6b3ecfa` or later.
+
+| Data | Made by | Used for |
+| --- | --- | --- |
+| LEAP hands, splits, `kite_code` records | `build_hands`, `splits`, `scripts/slurm/gen_kite_code.sbatch` | Training and source validation (LEAP family); the 105 `val`-split hands are the held-out LEAP evaluation pool |
+| Allegro / Barrett records | `gen_kite.sbatch`, `gen_10x.sbatch` | Training |
+| Wuji records | `gen_kite_family.py --robot wujihand_right` | Evaluation only |
+| Generated bodies (900) + records | `build_prim` | Training (P0000-P0799), held out (P0800-P0849), reserved test (P0850-P0899) |
 
 ## Deviations from the project overview
 
@@ -45,7 +78,7 @@ PROJECT_OVERVIEW.md is unchanged. The data here differs from it in these ways:
 | Finger attachment | "Small shifts in where fingers mount on the palm" | Index, middle and ring mounts shift by up to ±4 mm along the palm, and their motor housings move with them. The thumb mount does not move. | The thumb's motor housing is fused into the palm mesh with no clear boundary to move. This was decided during the build. |
 | Wrist poses in training | "w* ∈ arm workspace" | The wrist floats: uniform in [−0.4, 0.4]³ m with a uniformly random orientation (KITE's recipe). No arm is involved in training. | It matches what KITE's ψ and policy were trained on, keeps the data arm-agnostic, and needs no arm choice yet. Switching later only means regenerating. |
 | Joint sampling | "θ* ∼ U(joint limits)" | Uniform within limits, but contact poses where the hand collides with itself are rejected, as KITE does. | A label pose that self-collides can't be realized. |
-| What an example contains | (z, q_init, ρ_e, 𝒢_e) → q_goal, with z = ψ(c) | The raw contacts c (world-frame positions and normals) are stored instead of z. ρ_e and 𝒢_e come from each hand's `hand.json` and `Hand.graph()`. | KITE's ψ isn't released yet. z can be computed from c at load time once it is. |
+| What an example contains | (z, q_init, ρ_e, 𝒢_e) → q_goal, with z = ψ(c) | The raw contacts c (world-frame positions and normals) are stored instead of z. ρ_e and 𝒢_e come from each hand's `hand.json` and `Hand.graph()`. | z depends on which ψ is used. The decoder computes it from c with KITE's released ψ (KITE commit `1361595`). |
 | Finger-subset test | "Fingers never seen together, e.g. thumb + ring" | Hands whose fingers are exactly {thumb, ring} or {thumb, index, ring} are held out. Thumb and ring still appear together inside larger training hands. | Read literally, it would remove 144 of the 243 layouts, including every 4-finger hand. |
 
 These are additions the overview leaves open; none changes anything it states:
@@ -113,8 +146,8 @@ Splits are by hand, fixed before any example is sampled:
 
 | Split | Hands | What it holds out |
 | --- | --- | --- |
-| `train` | 1,015 | 145 layouts, draws 0–6 |
-| `val` | 56 | 8 other layouts, draws 0–6, for model selection only |
+| `train` | 966 | 138 layouts, draws 0–6 |
+| `val` | 105 | 15 other layouts, draws 0–6, for model selection only |
 | `test_finger_subset` | 36 | Hands whose fingers are exactly {thumb, ring} or {thumb, index, ring}, nominal geometry |
 | `test_combined` | 216 | The same layouts with random geometry (draws 1–6) |
 | `test_joint_count` | 378 | Every other hand with a 3-joint index finger, draws 0–6 |
@@ -132,6 +165,8 @@ Each file holds one hand's examples, generated with KITE's recipe (KITE §IV-B, 
 4. The label: joints upstream of a contact take the contact pose; all other joints stay at the start pose. The wrist takes the contact pose.
 
 Default sizes are 1,000 examples per training hand (about 1M in total, as in the overview), 1,000 per validation hand and 2,000 per test hand; override with `--per-hand train=4000`. A `wide` regime (`--regime wide`) gives 20% of examples 5 cm / 30° wrist noise, for robustness ablations.
+
+The `kite_code` regime (`--regime kite_code`, written to `data/examples/kite_code/`) follows KITE's released code where it differs from the paper text: contact-pose joints come from KITE's mixture distribution over each joint range (25% uniform, 30% correlated, 25% pushed to one end, 20% centred) instead of uniform, and no contact point is repeated within an example. The decoder trains and evaluates on `kite_code`.
 
 | Key | Shape | Contents |
 | --- | --- | --- |
@@ -153,15 +188,15 @@ Before writing, every file is checked by re-deriving the contacts from the store
 
 **In this repo:**
 1. **Import GET-Zero's own hands** as the extra test set. The files are already fetched; the converter isn't written.
-2. **Add z** once a ψ exists: KITE's when its code arrives, or our own. Computing it at load time may be enough, with no stored cache.
-3. **Re-check against KITE's code** when it arrives, then regenerate if anything differs (about 8 minutes). Things to compare:
+2. ~~**Add z**~~: done outside this repo; the decoder computes z from the stored contacts with KITE's released ψ.
+3. **Re-check against KITE's code.** Partly done: the `kite_code` regime matches KITE's released joint sampler and contact rule. Still to compare:
    - how the 4,096 template points and finger/palm regions are chosen;
    - which collision pairs are checked;
    - the rotation-noise convention;
    - where the world origin sits.
 4. **Training data for the test hands**, if an upper bound is chosen. `generate.py` can produce it under a new split name with its own seeds.
 5. **A dataset QA report:** distributions of contacts, K, mask density and regions per split, plus an audit that re-checks a sample of contact poses against exact meshes.
-6. **Differentiable (PyTorch) batched FK** over these hand descriptors, needed by the contact and self-model losses. It could live here or with the training code.
+6. ~~**Differentiable (PyTorch) batched FK**~~: done with the training code (`getkite.decoder.robots` in `get-ur-kite`).
 
 **Decisions still open** (details in [DATA_GENERATION_PLAN.md](DATA_GENERATION_PLAN.md), section 3):
 - **Upper bound:** which one to compare against: a re-implemented KITE decoder per test hand, the GET decoder trained with the test hands, or none.
@@ -171,13 +206,13 @@ Before writing, every file is checked by re-deriving the contacts from the store
 - **Wide-noise ablation:** whether to run it.
 - **Evaluation details:** the success tolerance and the IK solver.
 
-**Waiting on KITE's code and data:**
-- ψ's weights, for z.
-- The task policy π and its demonstrations, for the oracle-intent and closed-loop evaluation modes.
-- Their scenes and world-frame convention.
+**From KITE's release:**
+- ψ's weights: released (KITE commit `1361595`, `checkpoints/decoder/release.pt`) and used by the decoder.
+- Not released: the trained task policy π and its demonstrations, needed for the closed-loop evaluation mode.
+- Still to check against the release: their scenes and world-frame convention (see item 3).
 
-**Outside this repo:**
-- The GET decoder and its training.
+**Outside this repo** (in [`get-ur-kite`](https://github.com/jaas-hands/get-ur-kite)):
+- The GET decoder and its training; the delivered model is CF-3e.
 - The evaluation pipeline: open-loop metrics, oracle intent, and closed-loop MuJoCo with an arm, IK and a position controller.
 
 ## Third-party assets
