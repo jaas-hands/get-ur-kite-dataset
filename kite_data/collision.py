@@ -112,12 +112,17 @@ class Collider:
         self.data = mujoco.MjData(self.model)
         self.qadr = np.array([self.model.jnt_qposadr[mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_JOINT, j.name)]
                               for j in hand.dof_joints], dtype=int)
+        # coupled (mimic) joints: qpos = multiplier * q[source] + offset (equality constraints do not act in kinematics)
+        self.mimic = [(int(self.model.jnt_qposadr[mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_JOINT, j.name)]), *j.mimic)
+                      for j in hand.joints if getattr(j, "mimic", None) is not None]
         self.geom_link = [mujoco.mj_id2name(self.model, mujoco.mjtObj.mjOBJ_BODY, b) for b in self.model.geom_bodyid]
 
     def colliding_pairs(self, q) -> set[tuple[str, str]]:
         mj, m, d = self._mj, self.model, self.data
         d.qpos[:] = 0.0
         d.qpos[self.qadr] = q
+        for adr, src, mult, off in self.mimic:
+            d.qpos[adr] = mult * q[src] + off
         mj.mj_kinematics(m, d)
         mj.mj_collision(m, d)
         out = set()

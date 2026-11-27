@@ -29,6 +29,7 @@ class HandJoint:
     locked: bool
     dof: int = -1  # index among movable joints, -1 if locked
     parent_dof: int = -1  # nearest movable ancestor, -1 = wrist
+    mimic: tuple | None = None  # (source dof, multiplier, offset): angle = multiplier * q[source] + offset (dof = -1)
 
 
 class Hand:
@@ -83,10 +84,12 @@ class Hand:
         out = []
         while link != config.PALM:
             j = self.link_parent_joint[link]
-            if not j.locked:
+            if j.mimic is not None:  # a coupled joint moves with its source coordinate
+                out.append(j.mimic[0])
+            elif not j.locked:
                 out.append(j.dof)
             link = j.parent
-        return sorted(out)
+        return sorted(set(out))
 
     def fk(self, q, wrist=None) -> dict[str, np.ndarray]:
         """Link frames for joint angles q (..., n_dof); wrist (..., 4, 4) is the palm's pose (identity if None)."""
@@ -95,9 +98,10 @@ class Hand:
         T = {config.PALM: np.broadcast_to(np.eye(4) if wrist is None else np.asarray(wrist, float), batch + (4, 4))}
         for j in self.joints:
             M = T[j.parent] @ j.origin
-            if not j.locked:
+            if j.mimic is not None or not j.locked:
+                ang = q[..., j.dof] if j.mimic is None else j.mimic[1] * q[..., j.mimic[0]] + j.mimic[2]
                 Rq = np.zeros(batch + (4, 4))
-                Rq[..., :3, :3] = axis_rotation(j.axis, q[..., j.dof])
+                Rq[..., :3, :3] = axis_rotation(j.axis, ang)
                 Rq[..., 3, 3] = 1.0
                 M = M @ Rq
             T[j.child] = M
